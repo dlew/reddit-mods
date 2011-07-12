@@ -1,3 +1,9 @@
+# This program gathers data on subreddits and their mods.
+#
+# This is a VERY quick-and-dirty analysis tool.  If you're
+# looking for robust, elegant code then you've stumbled into
+# the wrong file.
+
 import urllib
 import os
 import time
