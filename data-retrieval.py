@@ -1,11 +1,13 @@
 import urllib
-import re
 import os
 import time
 from BeautifulSoup import BeautifulSoup
 import cookielib, urllib2
 import operator
 import json
+import locale
+
+locale.setlocale(locale.LC_ALL, "")
 
 cj = cookielib.CookieJar()
 ck = cookielib.Cookie(version=0, name='over18', value='90607813b305e784a6771b1e328a4c1449f16366', port=None, port_specified=False, domain='www.reddit.com', domain_specified=False, domain_initial_dot=False, path='/', path_specified=True, secure=False, expires=None, discard=True, comment=None, comment_url=None, rest={'HttpOnly': None}, rfc2109=False)
@@ -16,31 +18,33 @@ def get_subreddits():
 	if os.path.exists("tmp.json"):
 		return json.load(open("tmp.json", "r"))
 
-	numFinder = re.compile("(\d+)")
-
 	subreddits = []
-	pageNum = 1
-	while True:
-		f = urllib.urlopen("http://metareddit.com/reddits/biggest/list?page=%d" % pageNum)
-		soup = BeautifulSoup(f)
-		subreddit_links = soup.findAll("a", {'class': 'subreddit'})
 
-		if len(subreddit_links) == 0:
-			break
+	# Kick start things
+	data = json.load(urllib.urlopen("http://www.reddit.com/reddits/.json"))
+	subreddits, after = parse_subreddits(data)
 
-		for subreddit_link in subreddit_links:
-			m = numFinder.search(subreddit_link['title'])
-			subreddit = {
-				"name": str(subreddit_link.contents[0]),
-				"subscribers": int(m.group(0))
-			}
-			subreddits.append(subreddit)
-
-		pageNum += 1
+	while len(subreddits) < 5000:
+		print("Loaded %d subreddits" % len(subreddits))
+		time.sleep(2) # Be nice, don't crash reddit
+		data = json.load(urllib.urlopen("http://www.reddit.com/reddits/.json?after=%s" % after))
+		new_subreddits, after = parse_subreddits(data)
+		subreddits.extend(new_subreddits)
 
 	json.dump(subreddits, open('tmp.json', 'w'), indent=2)
 
 	return subreddits
+
+def parse_subreddits(data):
+	subreddits = []
+	for listing in data["data"]["children"]:
+		listing_data = listing["data"]
+		subreddit = {
+			"name": listing_data["display_name"],
+			"subscribers": listing_data["subscribers"]
+		}
+		subreddits.append(subreddit)
+	return subreddits, data["data"]["after"]
 
 def get_all_moderators(subreddits):
 	if os.path.exists("subreddits.json"):
@@ -49,7 +53,7 @@ def get_all_moderators(subreddits):
 	x = 0
 	for subreddit in subreddits:
 		get_moderators(subreddit)
-		time.sleep(5) # Be nice, don't crash reddit
+		time.sleep(2) # Be nice, don't crash reddit
 
 	json.dump(subreddits, open("subreddits.json", 'w'), indent=2)
 	return subreddits
@@ -76,7 +80,11 @@ def print_mod_subreddit_counts(subreddits):
 				mods[mod] += 1
 
 	for mod in sorted(mods.iteritems(), key=operator.itemgetter(1), reverse=True):
-		print mod
+		if mod[1] > 1:
+			print "%s mods %d subreddits" % mod
+		else:
+			print "%s mods %d subreddit" % mod
+	print
 
 def check_for_locks(subreddits):
 	hierarchy = {}
@@ -101,6 +109,7 @@ def check_for_locks(subreddits):
 			if slave not in checked and mod in hierarchy[slave]:
 				print "LOCK: %s and %s" % (mod, slave)
 				locked.append((mod, slave))
+	print
 
 	pain = []
 	for subreddit in subreddits:
@@ -138,10 +147,62 @@ def check_for_locks(subreddits):
 		return a['unlocked'] - b['unlocked']
 
 	for subreddit in sorted(pain, cmp=cmp_pain):
-		print "r/%s: %d out of %d (%d unlocked).  Lowest unlocked position: %d" % (subreddit["name"], subreddit["locked"], subreddit["total"], subreddit["unlocked"], subreddit["lowest"])
+		if subreddit["unlocked"] > 0:
+			print "r/%s: %d out of %d (%d unlocked).  Lowest unlocked position: %d" % (subreddit["name"], subreddit["locked"], subreddit["total"], subreddit["unlocked"], subreddit["lowest"])
+		else:
+			print "r/%s: %d out of %d (completely locked)." % (subreddit["name"], subreddit["locked"], subreddit["total"])
+	print
+
+# "Despot" is defined as a person who is the single mod of a subreddit
+# "Leader" is defined as a person who is the topmost mod of a subreddit
+def print_despots(subreddits):
+	despots = {}
+	leaders = {}
+	for subreddit in subreddits:
+		mods = subreddit["moderators"]
+		
+		if len(mods) == 0:
+			continue
+
+		leader = mods[0]
+		
+		if leader not in leaders:
+			leaders[leader] = 1
+		else:
+			leaders[leader] += 1
+
+		if len(mods) == 1:
+			if leader not in despots:
+				despots[leader] = 1
+			else:
+				despots[leader] += 1
+	
+	for mod in sorted(leaders.iteritems(), key=operator.itemgetter(1), reverse=True):
+		leader = mod[0]
+		despot_count = 0
+		if leader in despots:
+			despot_count = despots[leader]
+		print "%s is a leader of %d subreddits (and despot of %d of them)" % (leader, mod[1], despot_count)
+	print
+
+def print_sway(subreddits):
+	mods = {}
+	total = 0
+	for subreddit in subreddits:
+		subscribers = subreddit["subscribers"]
+		total += subscribers
+		for mod in subreddit["moderators"]:
+			if mod not in mods:
+				mods[mod] = 0
+			mods[mod] += subscribers
+
+	for mod in sorted(mods.iteritems(), key=operator.itemgetter(1), reverse=True):
+		print "%s mods %s users (%.2f%% of total)" % (mod[0], locale.format("%d", mod[1], True), float(mod[1]) / total * 100)
 
 if __name__ == "__main__":
 	subreddits = get_subreddits()
 	subreddits = get_all_moderators(subreddits)
-	#print_mod_subreddit_counts(subreddits)
+	print_mod_subreddit_counts(subreddits)
+	print_despots(subreddits)
 	check_for_locks(subreddits)
+	print_sway(subreddits)
