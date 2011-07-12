@@ -12,6 +12,7 @@ import cookielib, urllib2
 import operator
 import json
 import locale
+import csv
 
 locale.setlocale(locale.LC_ALL, "")
 
@@ -76,139 +77,98 @@ def get_moderators(subreddit):
 		modlist.append(str(mod.find('a').contents[0]))
 	subreddit['moderators'] = modlist
 
-def print_mod_subreddit_counts(subreddits):
+def gather_data(subreddits):
+	# Gather data on each moderator
 	mods = {}
-	for subreddit in subreddits:
-		for mod in subreddit["moderators"]:
-			if mod not in mods:
-				mods[mod] = 1
-			else:
-				mods[mod] += 1
-
-	for mod in sorted(mods.iteritems(), key=operator.itemgetter(1), reverse=True):
-		if mod[1] > 1:
-			print "%s mods %d subreddits" % mod
-		else:
-			print "%s mods %d subreddit" % mod
-	print
-
-def check_for_locks(subreddits):
 	hierarchy = {}
 	for subreddit in subreddits:
-		mods = subreddit["moderators"]
-		for i in range(len(mods)):
-			mod = mods[i]
+		subscribers = subreddit["subscribers"]
+		modlist = subreddit["moderators"]
+		num_mods = len(modlist)
+		for a in range(num_mods):
+			mod = modlist[a]
+			if mod not in mods:
+				mods[mod] = {
+					"subreddits": 0,
+					"leader": 0,
+					"despot": 0,
+					"users": 0,
+					"locked": 0
+				}
 			
+			mod_data = mods[mod]
+			mod_data["subreddits"] += 1
+			if a == 0:
+				mod_data["leader"] += 1
+			if num_mods == 1:
+				mod_data["despot"] += 1
+			mod_data["users"] += subscribers
+
+			# Gather hierarchy data
 			if mod not in hierarchy:
 				hierarchy[mod] = {}
 			
 			empowered = hierarchy[mod]
 			
-			for j in range(i + 1, len(mods)):
-				empowered[mods[j]] = None
+			for b in range(a + 1, num_mods):
+				empowered[modlist[b]] = None
 
+	# Gather lock data on each moderator
 	checked = {}
 	locked = []
 	for mod in hierarchy:
 		checked[mod] = None
 		for slave in hierarchy[mod]:
 			if slave not in checked and mod in hierarchy[slave]:
-				print "LOCK: %s and %s" % (mod, slave)
+				mods[mod]["locked"] += 1
+				mods[slave]["locked"] += 1
 				locked.append((mod, slave))
-	print
 
-	pain = []
+	# Add more data to subreddits
 	for subreddit in subreddits:
-		mods = subreddit["moderators"]
+		modlist = subreddit["moderators"]
 		locked_in_subreddit = []
 		for lock in locked:
-			if lock[0] in mods and lock[1] in mods:
+			if lock[0] in modlist and lock[1] in modlist:
 				if lock[0] not in locked_in_subreddit:
 					locked_in_subreddit.append(lock[0])
 				if lock[1] not in locked_in_subreddit:
 					locked_in_subreddit.append(lock[1])
 		
 		num_locked = len(locked_in_subreddit)
+		subreddit["locked"] = num_locked
+		for i in range(len(modlist)):
+			lowest_unlocked = i
+			if modlist[i] not in locked_in_subreddit:
+				break
+		subreddit["lowest"] = lowest_unlocked
+		
 		if num_locked > 0:
 			lowest_unlocked = 0
-			for i in range(len(mods)):
+			for i in range(len(modlist)):
 				lowest_unlocked = i
-				if mods[i] not in locked_in_subreddit:
+				if modlist[i] not in locked_in_subreddit:
 					break
-			
-			pain.append({
-				'name': subreddit["name"],
-				'locked': num_locked,
-				'unlocked': len(mods) - num_locked,
-				'total': len(mods),
-				'percent': float(num_locked) / len(mods) * 100,
-				'lowest': lowest_unlocked
-			})
-
-	def cmp_pain(a, b):
-		if a['unlocked'] == b['unlocked']:
-			if a['total'] == b['total']:
-				return b['lowest'] - a['lowest']
-			return b['total'] - a['total']
-		return a['unlocked'] - b['unlocked']
-
-	for subreddit in sorted(pain, cmp=cmp_pain):
-		if subreddit["unlocked"] > 0:
-			print "r/%s: %d out of %d (%d unlocked).  Lowest unlocked position: %d" % (subreddit["name"], subreddit["locked"], subreddit["total"], subreddit["unlocked"], subreddit["lowest"])
-		else:
-			print "r/%s: %d out of %d (completely locked)." % (subreddit["name"], subreddit["locked"], subreddit["total"])
-	print
-
-# "Despot" is defined as a person who is the single mod of a subreddit
-# "Leader" is defined as a person who is the topmost mod of a subreddit
-def print_despots(subreddits):
-	despots = {}
-	leaders = {}
-	for subreddit in subreddits:
-		mods = subreddit["moderators"]
-		
-		if len(mods) == 0:
-			continue
-
-		leader = mods[0]
-		
-		if leader not in leaders:
-			leaders[leader] = 1
-		else:
-			leaders[leader] += 1
-
-		if len(mods) == 1:
-			if leader not in despots:
-				despots[leader] = 1
-			else:
-				despots[leader] += 1
 	
-	for mod in sorted(leaders.iteritems(), key=operator.itemgetter(1), reverse=True):
-		leader = mod[0]
-		despot_count = 0
-		if leader in despots:
-			despot_count = despots[leader]
-		print "%s is a leader of %d subreddits (and despot of %d of them)" % (leader, mod[1], despot_count)
-	print
+	return subreddits, mods
 
-def print_sway(subreddits):
-	mods = {}
-	total = 0
+def write_subreddit_csv(subreddits, out="subreddits.csv"):
+	writer = csv.writer(open(out, 'w'))
 	for subreddit in subreddits:
-		subscribers = subreddit["subscribers"]
-		total += subscribers
-		for mod in subreddit["moderators"]:
-			if mod not in mods:
-				mods[mod] = 0
-			mods[mod] += subscribers
+		num_mods = len(subreddit["moderators"])
+		locked = subreddit["locked"]
+		writer.writerow([subreddit["name"], subreddit["subscribers"], num_mods, locked, num_mods - locked, subreddit["lowest"]])
 
-	for mod in sorted(mods.iteritems(), key=operator.itemgetter(1), reverse=True):
-		print "%s mods %s users (%.2f%% of total)" % (mod[0], locale.format("%d", mod[1], True), float(mod[1]) / total * 100)
+def write_mods_csv(mods, out="mods.csv"):
+	writer = csv.writer(open(out, 'w'))
+	for mod in mods.keys():
+		mod_data = mods[mod]
+		writer.writerow([mod, mod_data["subreddits"], mod_data["leader"], mod_data["despot"], mod_data["users"], mod_data["locked"]])
 
 if __name__ == "__main__":
 	subreddits = get_subreddits()
 	subreddits = get_all_moderators(subreddits)
-	print_mod_subreddit_counts(subreddits)
-	print_despots(subreddits)
-	check_for_locks(subreddits)
-	print_sway(subreddits)
+	
+	subreddits, mods = gather_data(subreddits)
+	write_subreddit_csv(subreddits)
+	write_mods_csv(mods)
